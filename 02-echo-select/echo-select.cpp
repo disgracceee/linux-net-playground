@@ -211,7 +211,6 @@ int main(){
             }
         }
         
-        // --- одна зачистка за итерацию ---
         clients.erase(
             std::remove_if(clients.begin(), clients.end(),
                 [](Client& c) {
