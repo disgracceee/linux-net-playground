@@ -224,7 +224,7 @@ int main(){
                     return false;
                 }),
             clients.end());
-    }   // конец while
+    }   
 
     close(lst);
     return 0;
