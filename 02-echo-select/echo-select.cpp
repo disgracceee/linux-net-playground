@@ -233,31 +233,30 @@ int main()
                     continue;
                 }
             }
-            if (FD_ISSET(c.fd_client, &writefd)){
-                if(c.alive){
+            if (FD_ISSET(c.fd_client, &writefd))
+            {
+                if (c.alive)
+                {
                     flush_out(c);
                 }
             }
+                }   // ← конец for: erase уже ПОСЛЕ цикла
 
-        clients.erase(std::remove_if(clients.begin(), clients.end(), [](Client& c){
-            if (c.alive) {
-                return false;
-            }
-            if (c.fd_client >= 0) {
-                close(c.fd_client);
-            }
+        clients.erase(std::remove_if(clients.begin(), clients.end(), [](Client &c)
+        {
+            if (c.alive) return false;
+            if (c.fd_client >= 0) close(c.fd_client);
             return true;
         }), clients.end());
-    }   
 
-    for(Client& c : clients){
-        if(c.fd_client >= 0){
+    }   // ← конец while (true)
+
+    // закрытие всех клиентов: только при выходе из сервера
+    for (Client &c : clients)
+    {
+        if (c.fd_client >= 0)
             close(c.fd_client);
-        } else {
-            continue;
-        }
     }
-
     close(fd_lst);
     return 0;
-}   
+}
