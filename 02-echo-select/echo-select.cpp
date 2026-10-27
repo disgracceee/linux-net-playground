@@ -240,8 +240,7 @@ int main()
                     flush_out(c);
                 }
             }
-                }   // ← конец for: erase уже ПОСЛЕ цикла
-
+                }   
         clients.erase(std::remove_if(clients.begin(), clients.end(), [](Client &c)
         {
             if (c.alive) return false;
@@ -249,9 +248,9 @@ int main()
             return true;
         }), clients.end());
 
-    }   // ← конец while (true)
+    }   
 
-    // закрытие всех клиентов: только при выходе из сервера
+    
     for (Client &c : clients)
     {
         if (c.fd_client >= 0)
