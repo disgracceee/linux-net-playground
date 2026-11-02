@@ -16,46 +16,87 @@ constexpr int MAXBUF = 1024 * 1024;
 
 struct Client
 {
-    int fd_clients = -1;
-    std::string buff{};
+    int fd_client = -1;
     uint32_t event = 0;
+    std::string buff{};
     bool alive = true;
+    bool FIN = false;
 };
 
 bool set_noblocking(int fd)
 {
-    int flags = fcntl(fd, F_GETFL, nullptr);
+    int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0)
     {
-        perror("fcntl(F_GETFL)");
+        perror("error fcntl(F_GETFD)");
         return false;
     }
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
     {
-        perror("fcntl(F_SETFL)");
+        perror("eror fcntl(F_SETFD(O_NONBLOCK))");
         return false;
     }
     return true;
 }
 
-void flush_out(Client &c)
+bool handle_event(int ec, Client *c)
 {
-    while (!c.buff.empty())
+    uint32_t events = EPOLLET;
+    if (!c->buff.empty())
     {
-        ssize_t n = send(c.fd_clients, c.buff.data(), c.buff.size(), 0);
+        events |= EPOLLOUT;
+    }
+    if (!c->FIN && c->buff.size() < MAXBUF)
+    {
+        events |= EPOLLIN;
+    }
+
+    if (c->event == events)
+    {
+        return true;
+    }
+
+    epoll_event eevents{};
+    eevents.data.ptr = c;
+    eevents.events = events;
+
+    if (epoll_ctl(ec, EPOLL_CTL_MOD, c->fd_client, &eevents) < 0)
+    {
+        perror("error epoll_ctl(EPOLL_CTL_MOD)");
+        return false;
+    }
+    c->event = events;
+    return true;
+}
+void close_client(int ec, Client *c, int &nclients)
+{
+    if (epoll_ctl(ec, EPOLL_CTL_DEL, c->fd_client, nullptr) < 0)
+    {
+        perror("error epoll_ctl(DEL)");
+    }
+    close(c->fd_client);
+    delete c;
+    --nclients;
+}
+
+void flush_out(Client *c)
+{
+    while (!c->buff.empty())
+    {
+        ssize_t n = send(c->fd_client, c->buff.data(), c->buff.size(), 0);
         if (n > 0)
         {
-            c.buff.erase(0, static_cast<size_t>(n));
+            c->buff.erase(0, static_cast<std::size_t>(n));
             continue;
         }
         else if (n < 0)
         {
             if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
             {
-                c.alive = false;
+                c->alive = false;
                 break;
             }
-            else if (errno == EWOULDBLOCK || errno == EAGAIN)
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 break;
             }
@@ -63,24 +104,15 @@ void flush_out(Client &c)
             {
                 continue;
             }
-            else
-            {
-                perror("fatal error send");
-                c.alive = false;
-                break;
-            }
+            c->alive = false;
+            break;
+        }
+        else
+        {
+            c->alive = false;
+            break;
         }
     }
-}
-void close_client(int ep, Client *c, int &nclients)
-{
-    if (epoll_ctl(ep, EPOLL_CTL_DEL, c->fd_clients, nullptr) < 0)
-    {
-        perror("error EPOLL_CTL_DEL");
-    }
-    close(c->fd_clients);
-    delete c;
-    --nclients;
 }
 
 int main()
@@ -90,27 +122,25 @@ int main()
     int fd_lst = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd_lst < 0)
     {
-        perror("socket(lst)");
+        perror("socket");
         return 1;
     }
-
-    sockaddr_in addr{};
-
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
 
     int reuse = 1;
     if (setsockopt(fd_lst, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
     {
-        perror("setsockopt(SO_REUSEADDR)");
+        perror("setsockopt(REUSE)");
     }
-
     if (!set_noblocking(fd_lst))
     {
         close(fd_lst);
         return 1;
     }
+
+    sockaddr_in addr{};
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
 
     if (bind(fd_lst, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
     {
@@ -125,30 +155,28 @@ int main()
         close(fd_lst);
         return 1;
     }
-
-    char buff[4096]{};
+    char buff[4096];
     int ec = epoll_create1(0);
     if (ec < 0)
     {
-        perror("epoll_create");
+        perror("epoll_create1");
         close(fd_lst);
         return 1;
     }
 
-    epoll_event ev{};
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.ptr = nullptr;
-    if (epoll_ctl(ec, EPOLL_CTL_ADD, fd_lst, &ev) < 0)
+    epoll_event eventsls;
+    eventsls.events = EPOLLIN | EPOLLET;
+    eventsls.data.ptr = nullptr;
+    if (epoll_ctl(ec, EPOLL_CTL_ADD, fd_lst, &eventsls) < 0)
     {
-        perror("epoll_ctl(listen)");
+        perror("epoll_ctl(ADD(fd_lst))");
         close(fd_lst);
         close(ec);
         return 1;
     }
 
-    epoll_event events[MAXEVENT];
+    epoll_event events[MAXEVENT]{};
     int nclients = 0;
-
     while (true)
     {
         int active = epoll_wait(ec, events, MAXEVENT, -1);
@@ -161,20 +189,17 @@ int main()
             perror("fatal error epoll_wait");
             break;
         }
+
         for (int i = 0; i < active; i++)
         {
             if (events[i].data.ptr == nullptr)
             {
                 while (true)
                 {
-                    int fd_clients = accept(fd_lst, nullptr, nullptr);
-                    if (fd_clients < 0)
+                    int fd_client = accept(fd_lst, nullptr, nullptr);
+                    if (fd_client < 0)
                     {
-                        if (errno == EINTR)
-                        {
-                            continue;
-                        }
-                        else if (errno == ECONNABORTED || errno == ECONNRESET)
+                        if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
                         {
                             continue;
                         }
@@ -185,55 +210,48 @@ int main()
                         perror("fatal error accept");
                         break;
                     }
-
-                    if (!set_noblocking(fd_clients) || nclients >= MAXCLIENTS)
+                    if (!set_noblocking(fd_client) || nclients >= MAXCLIENTS)
                     {
-                        close(fd_clients);
+                        close(fd_client);
                         continue;
                     }
                     Client *c = new Client;
-                    c->event |= EPOLLIN | EPOLLOUT | EPOLLET;
-                    c->fd_clients = fd_clients;
-                    epoll_event eventcli{};
-                    eventcli.data.ptr = c;
-                    eventcli.events = c->event;
-                    if (epoll_ctl(ec, EPOLL_CTL_ADD, c->fd_clients, &eventcli) < 0)
+                    c->fd_client = fd_client;
+                    c->event = EPOLLET | EPOLLIN;
+                    epoll_event cevent{};
+                    cevent.data.ptr = c;
+                    cevent.events = c->event;
+                    if (epoll_ctl(ec, EPOLL_CTL_ADD, fd_client, &cevent) < 0)
                     {
-                        perror("error epoll_ctl(EPOLL_STL_ADD)");
-                        close(fd_clients);
-                        delete (c);
+                        perror("epoll_ctl(accept)");
+                        close(fd_client);
+                        delete c;
                         continue;
                     }
-                    std::cerr << "[Client " << c->fd_clients << " " << " ] connected\n";
+                    std::cout << "[Client " << fd_client << "] connected\n";
                     ++nclients;
                 }
             }
             else if (events[i].data.ptr != nullptr)
             {
                 Client *c = static_cast<Client *>(events[i].data.ptr);
-                if (events[i].events & (EPOLLIN | EPOLLHUP | EPOLLERR | EPOLLOUT))
+                if (events[i].events & EPOLLERR)
                 {
-                    if (events[i].events & (EPOLLERR | EPOLLHUP))
-                    {
-                        c->alive = false;
-                        close_client(ec, c, nclients);
-                        continue;
-                    }
+                    c->alive = false;
+                }
+                else if (events[i].events & (EPOLLIN | EPOLLHUP))
+                {
                     while (true)
                     {
-                        ssize_t n = recv(c->fd_clients, buff, sizeof(buff), 0);
+                        ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
                         if (n > 0)
                         {
-                            c->buff.append(buff, static_cast<size_t>(n));
-                        }
-                        else if (n == 0)
-                        {
-                            c->alive = false;
-                            break;
+                            c->buff.append(buff, static_cast<std::size_t>(n));
+                            continue;
                         }
                         else if (n < 0)
                         {
-                            if (errno == EWOULDBLOCK || errno == EAGAIN)
+                            if (errno == EAGAIN || errno == EWOULDBLOCK)
                             {
                                 break;
                             }
@@ -241,9 +259,8 @@ int main()
                             {
                                 continue;
                             }
-                            else if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
+                            else if (errno == ECONNRESET || errno == ECONNABORTED || errno == EPIPE)
                             {
-                                std::cerr << "Client RST\n";
                                 c->alive = false;
                                 break;
                             }
@@ -254,21 +271,30 @@ int main()
                                 break;
                             }
                         }
+                        else if (n == 0)
+                        {
+                            c->FIN = true;
+                            break;
+                        }
                     }
                 }
-                if (c->alive && events[i].events & (EPOLLOUT | EPOLLIN))
+                if (c->alive)
+                    flush_out(c);
+
+                if (!c->alive || (c->FIN && c->buff.empty()))
                 {
-                    flush_out(*c);
-                }
-                if (!c->alive)
-                {
-                    std::cerr << "[Client " << c->fd_clients << " " << " ] disconnected\n";
+                    std::cerr << "[Client " << c->fd_client << "] disconnected\n";
                     close_client(ec, c, nclients);
+                    continue;
+                }
+
+                if(!handle_event(ec, c)){
+                    close_client(ec,c,nclients);
                 }
             }
         }
     }
-    close(ec);
     close(fd_lst);
-    return 0;
+    close(ec);
+    return 1;
 }
