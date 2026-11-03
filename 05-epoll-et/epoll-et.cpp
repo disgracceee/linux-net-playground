@@ -288,8 +288,9 @@ int main()
                     continue;
                 }
 
-                if(!handle_event(ec, c)){
-                    close_client(ec,c,nclients);
+                if (!handle_event(ec, c))
+                {
+                    close_client(ec, c, nclients);
                 }
             }
         }
