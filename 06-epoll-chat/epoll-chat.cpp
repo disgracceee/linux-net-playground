@@ -12,7 +12,6 @@
 #include <vector>
 #include <algorithm>
 
-
 constexpr int MAXCLIENTS = 1024;
 constexpr int MAXEVENT = 64;
 constexpr int PORT = 5555;
@@ -53,7 +52,7 @@ void close_client(int ec, Client *c, int &nclients)
     delete c;
     --nclients;
 }
-void flush_out(Client *c, Client * from)
+void flush_out(Client *c, Client *from)
 {
 
     while (from->sent < c->buff.size())
@@ -144,7 +143,7 @@ int main()
         close(fd_lst);
         return 1;
     }
-    
+
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
@@ -307,28 +306,42 @@ int main()
                     }
                 }
 
+                if (!c->buff.empty() && c->buff.front() == '\n')
+                {
+                    c->buff.pop_back();
+                }
+
                 if (!c->buff.empty())
                 {
+                    std::string temp = "[Client " + std::to_string(c->fd_client) + "]: ";
                     for (int i = 0; i < clients.size(); i++)
                     {
-                        if(c->fd_client == clients[i]->fd_client){
+                        std::string out;
+                        if (c->fd_client == clients[i]->fd_client)
+                        {
+                            out = "\033[A\033[2K\r" + temp;
+                            send(clients[i]->fd_client, out.data(), out.size(), 0);
+                            flush_out(c, clients[i]);
                             continue;
                         }
-                        std::string temp = "[Client " + std::to_string(c->fd_client) + "]: ";
-                        send(clients[i]->fd_client, temp.data(), temp.size(), 0);
+                        out = temp;
+                        send(clients[i]->fd_client, out.data(), out.size(), 0);
                         flush_out(c, clients[i]);
                     }
                 }
                 c->buff.clear();
-                for(int i = 0; i < clients.size(); i++){
+                for (int i = 0; i < clients.size(); i++)
+                {
                     clients[i]->sent = 0;
                 }
 
                 if (c->FIN || !c->alive)
                 {
                     std::string tempcl = "[Client " + std::to_string(c->fd_client) + "] disconnected\n";
-                    for(Client* clie : clients){
-                        if(clie->fd_client == c->fd_client){
+                    for (Client *clie : clients)
+                    {
+                        if (clie->fd_client == c->fd_client)
+                        {
                             continue;
                         }
                         send(clie->fd_client, tempcl.data(), tempcl.size(), 0);
