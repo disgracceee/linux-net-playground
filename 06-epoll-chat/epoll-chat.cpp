@@ -57,7 +57,7 @@ void flush_out(Client *c, Client *from)
 
     while (from->sent < c->buff.size())
     {
-        ssize_t n = send(from->fd_client, c->buff.data() + c->sent, c->buff.size() - from->sent, 0);
+        ssize_t n = send(from->fd_client, c->buff.data() + from->sent, c->buff.size() - from->sent, 0);
         if (n > 0)
         {
             from->sent += n;
@@ -67,7 +67,7 @@ void flush_out(Client *c, Client *from)
         {
             if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
             {
-                c->alive = false;
+                from->alive = false;
                 break;
             }
             else if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -230,7 +230,6 @@ int main()
                     Client *c = new Client;
                     c->fd_client = fd_client;
                     c->event = EPOLLIN | EPOLLET;
-                    clients.push_back(c);
                     epoll_event clientevent{};
                     clientevent.data.ptr = c;
                     clientevent.events = c->event;
@@ -249,6 +248,7 @@ int main()
                     {
                         std::cout << '\n';
                     }
+                    clients.push_back(c);
                     for (int i = 0; i < clients.size(); i++)
                     {
                         if (fd_client == clients[i]->fd_client)
@@ -266,6 +266,8 @@ int main()
                 if (events[i].events & EPOLLERR)
                 {
                     c->alive = false;
+                    auto it = std::find(clients.begin(), clients.end(), c);
+                    clients.erase(it);
                     close_client(ec, c, nclients);
                     continue;
                 }
