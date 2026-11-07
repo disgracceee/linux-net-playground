@@ -11,6 +11,7 @@
 #include <sys/epoll.h>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 constexpr int MAXCLIENTS = 1024;
 constexpr int MAXEVENT = 64;
@@ -21,11 +22,19 @@ struct Client
 {
     int fd_client = -1;
     uint32_t event = 0;
-    std::string buff{};
+    std::string inbuff{};
+    std::string outbuff{};
     bool alive = true;
     bool FIN = false;
     int sent = 0;
 };
+
+void handle_message(Client * c, std::string* data, size_t size){
+    uint32_t be = htons(size);
+    const char * str = reinterpret_cast<const char *>(&be);
+    c->outbuff.insert(c->outbuff.end(), str, str + 4);
+    c->outbuff.insert(c->outbuff.end(), data, data + size);
+}
 
 bool set_noblocking(int fd)
 {
@@ -55,9 +64,9 @@ void close_client(int ec, Client *c, int &nclients)
 void flush_out(Client *c, Client *from)
 {
 
-    while (from->sent < c->buff.size())
+    while (from->sent < c->inbuff.size())
     {
-        ssize_t n = send(from->fd_client, c->buff.data() + from->sent, c->buff.size() - from->sent, 0);
+        ssize_t n = send(from->fd_client, c->inbuff.data() + from->sent, c->inbuff.size() - from->sent, 0);
         if (n > 0)
         {
             from->sent += n;
@@ -92,11 +101,11 @@ void flush_out(Client *c, Client *from)
 bool handle_event(int ec, Client *c)
 {
     uint32_t events = EPOLLET;
-    if (!c->buff.empty())
+    if (!c->inbuff.empty())
     {
         events |= EPOLLOUT;
     }
-    if (!c->FIN && c->buff.size() < MAXBUF)
+    if (!c->FIN && c->inbuff.size() < MAXBUF)
     {
         events |= EPOLLIN;
     }
@@ -278,7 +287,7 @@ int main()
                         ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
                         if (n > 0)
                         {
-                            c->buff.append(buff, static_cast<std::size_t>(n));
+                            c->inbuff.append(buff, static_cast<std::size_t>(n));
                             continue;
                         }
                         else if (n == 0)
@@ -308,12 +317,12 @@ int main()
                     }
                 }
 
-                if (!c->buff.empty() && c->buff.front() == '\n')
+                if (!c->inbuff.empty() && c->inbuff.front() == '\n')
                 {
-                    c->buff.pop_back();
+                    c->inbuff.pop_back();
                 }
 
-                if (!c->buff.empty())
+                if (!c->inbuff.empty())
                 {
                     std::string temp = "[Client " + std::to_string(c->fd_client) + "]: ";
                     for (int i = 0; i < clients.size(); i++)
@@ -331,7 +340,7 @@ int main()
                         flush_out(c, clients[i]);
                     }
                 }
-                c->buff.clear();
+                c->inbuff.clear();
                 for (int i = 0; i < clients.size(); i++)
                 {
                     clients[i]->sent = 0;
