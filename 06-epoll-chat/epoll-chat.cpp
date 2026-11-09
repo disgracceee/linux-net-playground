@@ -16,7 +16,8 @@
 constexpr int MAXCLIENTS = 1024;
 constexpr int MAXEVENT = 64;
 constexpr int PORT = 5555;
-constexpr int MAXBUF = 1024 * 1024;
+constexpr int MAX_PAYLOUT = 1 * 1024 * 1024;
+constexpr int MAX_INBUF = 4 + MAX_PAYLOUT + 64 * 1024;
 
 struct Client
 {
@@ -24,17 +25,13 @@ struct Client
     uint32_t event = 0;
     std::string inbuff{};
     std::string outbuff{};
+    std::string prefbufflength{};
     bool alive = true;
     bool FIN = false;
-    int sent = 0;
+    std::size_t received = 0;
 };
 
-void handle_message(Client * c, std::string* data, size_t size){
-    uint32_t be = htons(size);
-    const char * str = reinterpret_cast<const char *>(&be);
-    c->outbuff.insert(c->outbuff.end(), str, str + 4);
-    c->outbuff.insert(c->outbuff.end(), data, data + size);
-}
+std::vector<Client *> clients;
 
 bool set_noblocking(int fd)
 {
@@ -61,22 +58,106 @@ void close_client(int ec, Client *c, int &nclients)
     delete c;
     --nclients;
 }
-void flush_out(Client *c, Client *from)
-{
 
-    while (from->sent < c->inbuff.size())
+bool update_events(int ec, Client *c)
+{
+    uint32_t mask = EPOLLET;
+    if (c->alive && !c->FIN && c->inbuff.size() < MAX_INBUF)
     {
-        ssize_t n = send(from->fd_client, c->inbuff.data() + from->sent, c->inbuff.size() - from->sent, 0);
+        mask |= EPOLLIN;
+    }
+    if (!c->outbuff.empty())
+    {
+        mask |= EPOLLOUT;
+    }
+
+    if (c->event == mask)
+    {
+        return true;
+    }
+
+    epoll_event eevent{};
+    eevent.data.ptr = c;
+    eevent.events = mask;
+    if (epoll_ctl(ec, EPOLL_CTL_MOD, c->fd_client, &eevent) < 0)
+    {
+        perror("epoll_ctl(MOD)");
+        return false;
+    }
+    c->event = mask;
+    return true;
+}
+
+bool on_data(Client *c, int ec)
+{
+    if (c->outbuff.size() + c->inbuff.size() > MAX_INBUF)
+    {
+        return false;
+    }
+    int offset = 0;
+    while (true)
+    {
+        int available = c->inbuff.size() - offset;
+        if (available < 4)
+        {
+            break;
+        }
+
+        uint32_t be = 0;
+        memcpy(&be, c->inbuff.data() + offset, 4);
+        uint32_t len = ntohl(be);
+
+        if (len > MAX_PAYLOUT)
+        {
+            return false;
+        }
+        if (available - 4 < static_cast<int>(len))
+        {
+            break;
+        }
+        std::string msg(c->inbuff.data() + offset + 4, len);
+        std::string msg_pref_client = "[Client " + std::to_string(c->fd_client) + "]: " + msg + '\n';
+        uint32_t new_len_le = msg_pref_client.size();
+        uint32_t new_len_be = htonl(new_len_le);
+        const char *ptr = reinterpret_cast<const char *>(&new_len_be);
+        for (Client *cl : clients)
+        {
+            if (cl == c)
+            {
+                continue;
+            }
+            if (cl->outbuff.size() + static_cast<std::size_t>(new_len_le) + 4 > MAX_INBUF)
+            {
+                cl->alive = false;
+                continue;
+            }
+            cl->outbuff.append(ptr, 4);
+            cl->outbuff.append(msg_pref_client);
+            update_events(ec, cl);
+        }
+        offset += len + 4;
+    }
+    if (offset)
+    {
+        c->inbuff.erase(0, offset);
+    }
+    return true;
+}
+void flush_out(Client *to)
+{
+    while (!to->outbuff.empty())
+    {
+        ssize_t n = send(to->fd_client, to->outbuff.data(), to->outbuff.size(), 0);
         if (n > 0)
         {
-            from->sent += n;
+            to->outbuff.erase(0, static_cast<std::size_t>(n));
             continue;
         }
         else if (n < 0)
         {
             if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
             {
-                from->alive = false;
+                to->alive = false;
                 break;
             }
             else if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -87,45 +168,14 @@ void flush_out(Client *c, Client *from)
             {
                 continue;
             }
-            c->alive = false;
-            break;
+            else
+            {
+                perror("error send");
+                to->alive = false;
+                break;
+            }
         }
-        else
-        {
-            c->alive = false;
-            break;
-        }
     }
-}
-
-bool handle_event(int ec, Client *c)
-{
-    uint32_t events = EPOLLET;
-    if (!c->inbuff.empty())
-    {
-        events |= EPOLLOUT;
-    }
-    if (!c->FIN && c->inbuff.size() < MAXBUF)
-    {
-        events |= EPOLLIN;
-    }
-
-    if (c->event == events)
-    {
-        return true;
-    }
-
-    epoll_event eevents{};
-    eevents.data.ptr = c;
-    eevents.events = events;
-
-    if (epoll_ctl(ec, EPOLL_CTL_MOD, c->fd_client, &eevents) < 0)
-    {
-        perror("error epoll_ctl(EPOLL_CTL_MOD)");
-        return false;
-    }
-    c->event = events;
-    return true;
 }
 
 int main()
@@ -185,7 +235,6 @@ int main()
     levent.events = EPOLLIN | EPOLLET;
     levent.data.ptr = nullptr;
     epoll_event events[MAXEVENT];
-    std::vector<Client *> clients;
 
     if (epoll_ctl(ec, EPOLL_CTL_ADD, fd_lst, &levent) < 0)
     {
@@ -258,35 +307,56 @@ int main()
                         std::cout << '\n';
                     }
                     clients.push_back(c);
-                    for (int i = 0; i < clients.size(); i++)
+                    std::string msg = "[Client " + std::to_string(c->fd_client) + "] Conneted\n";
+                    uint32_t size = htonl(msg.size());
+                    for (Client *cj : clients)
                     {
-                        if (fd_client == clients[i]->fd_client)
+                        if (cj == c)
+                        {
+                            std::string hello = "Welcome, you’ve connected.\n";
+                            uint32_t sizeh = htonl(hello.size());
+                            const char *ptr = reinterpret_cast<const char *>(&sizeh);
+                            c->outbuff.append(ptr, 4);
+                            c->outbuff.append(hello);
+                            update_events(ec, c);
+                            continue;
+                        }
+                        const char *p = reinterpret_cast<const char *>(&size);
+                        if (cj->outbuff.size() + msg.size() + 4 > MAX_INBUF)
                         {
                             continue;
                         }
-                        std::string name = "[Client " + std::to_string(fd_client) + "] connected\n";
-                        send(clients[i]->fd_client, name.data(), name.size(), 0);
+                        cj->outbuff.append(p, 4);
+                        cj->outbuff.append(msg);
+
+                        update_events(ec, cj);
                     }
                 }
             }
             else if (events[i].data.ptr != nullptr)
             {
                 Client *c = static_cast<Client *>(events[i].data.ptr);
+                if (!c->alive)
+                {
+                    continue;
+                }
                 if (events[i].events & EPOLLERR)
                 {
                     c->alive = false;
-                    auto it = std::find(clients.begin(), clients.end(), c);
-                    clients.erase(it);
-                    close_client(ec, c, nclients);
                     continue;
                 }
-                while (true)
+                if (events[i].events & (EPOLLIN | EPOLLHUP))
                 {
-                    if (events[i].events & (EPOLLIN | EPOLLHUP))
+                    while (true)
                     {
                         ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
                         if (n > 0)
                         {
+                            if (c->inbuff.size() + n > MAX_INBUF)
+                            {
+                                c->alive = false;
+                                break;
+                            }
                             c->inbuff.append(buff, static_cast<std::size_t>(n));
                             continue;
                         }
@@ -316,58 +386,57 @@ int main()
                         }
                     }
                 }
-
-                if (!c->inbuff.empty() && c->inbuff.front() == '\n')
+                if (!on_data(c, ec))
                 {
-                    c->inbuff.pop_back();
+                    c->alive = false;
                 }
-
-                if (!c->inbuff.empty())
+                if (c->alive)
                 {
-                    std::string temp = "[Client " + std::to_string(c->fd_client) + "]: ";
-                    for (int i = 0; i < clients.size(); i++)
-                    {
-                        std::string out;
-                        if (c->fd_client == clients[i]->fd_client)
-                        {
-                            out = "\033[A\033[2K\r" + temp;
-                            send(clients[i]->fd_client, out.data(), out.size(), 0);
-                            flush_out(c, clients[i]);
-                            continue;
-                        }
-                        out = temp;
-                        send(clients[i]->fd_client, out.data(), out.size(), 0);
-                        flush_out(c, clients[i]);
-                    }
+                    flush_out(c);
                 }
-                c->inbuff.clear();
-                for (int i = 0; i < clients.size(); i++)
+                if (c->alive && c->FIN && !c->outbuff.empty())
                 {
-                    clients[i]->sent = 0;
+                    flush_out(c);
                 }
-
-                if (c->FIN || !c->alive)
+                if (c->alive && c->FIN && c->outbuff.empty())
                 {
-                    std::string tempcl = "[Client " + std::to_string(c->fd_client) + "] disconnected\n";
-                    for (Client *clie : clients)
-                    {
-                        if (clie->fd_client == c->fd_client)
-                        {
-                            continue;
-                        }
-                        send(clie->fd_client, tempcl.data(), tempcl.size(), 0);
-                    }
-                    std::cout << "[Client " << c->fd_client << "] disconnected\n";
-                    close_client(ec, c, nclients);
-                    auto it = std::find(clients.begin(), clients.end(), c);
-                    clients.erase(it);
-                    continue;
+                    c->alive = false;
+                }
+                if (c->alive && !update_events(ec, c))
+                {
+                    c->alive = false;
                 }
             }
         }
+        for (Client *tempcl : clients)
+        {
+            if (!tempcl->alive)
+            {
+                std::string msg_for_all = "[Client " + std::to_string(tempcl->fd_client) + "] disconnected\n";
+                uint32_t len = htonl(msg_for_all.size());
+                const char *ptrr = reinterpret_cast<const char *>(&len);
+                for (Client *tempcl2 : clients)
+                {
+                    if(!tempcl2->alive || tempcl == tempcl2){
+                        continue;
+                    }
+                    if(tempcl2->outbuff.size() + msg_for_all.size() + 4 > MAX_INBUF){
+                        tempcl2->alive = false;
+                        continue;
+                    }
+                    tempcl2->outbuff.append(ptrr, 4);
+                    tempcl2->outbuff.append(msg_for_all);
+                    update_events(ec, tempcl2);
+                }
+            }
+        }
+        for(auto it = clients.begin(); it != clients.end();){
+            if(!(*it)->alive){
+                std::cout << "[Client " << (*it)->fd_client << "] disconnected.\n"; 
+                close_client(ec, (*it), nclients);
+                it = clients.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
-
-    close(ec);
-    close(fd_lst);
-    return 0;
-}
