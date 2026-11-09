@@ -440,3 +440,7 @@ int main()
             }
         }
     }
+    close(fd_lst);
+    close(ec);
+    return 0;
+}
