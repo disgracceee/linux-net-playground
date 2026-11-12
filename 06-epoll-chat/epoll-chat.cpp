@@ -90,10 +90,6 @@ bool update_events(int ec, Client *c)
 
 bool on_data(Client *c, int ec)
 {
-    if (c->outbuff.size() + c->inbuff.size() > MAX_INBUF)
-    {
-        return false;
-    }
     int offset = 0;
     while (true)
     {
@@ -122,7 +118,7 @@ bool on_data(Client *c, int ec)
         const char *ptr = reinterpret_cast<const char *>(&new_len_be);
         for (Client *cl : clients)
         {
-            if (cl == c)
+            if (cl == c || cl->alive == false)
             {
                 continue;
             }
@@ -324,6 +320,7 @@ int main()
                         const char *p = reinterpret_cast<const char *>(&size);
                         if (cj->outbuff.size() + msg.size() + 4 > MAX_INBUF)
                         {
+                            cj->alive = false;
                             continue;
                         }
                         cj->outbuff.append(p, 4);
@@ -358,7 +355,12 @@ int main()
                                 break;
                             }
                             c->inbuff.append(buff, static_cast<std::size_t>(n));
+                            if(!on_data(c, ec)){
+                                c->alive = false;
+                                break;
+                            }
                             continue;
+
                         }
                         else if (n == 0)
                         {
@@ -385,10 +387,6 @@ int main()
                             break;
                         }
                     }
-                }
-                if (!on_data(c, ec))
-                {
-                    c->alive = false;
                 }
                 if (c->alive)
                 {
