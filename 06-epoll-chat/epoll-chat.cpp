@@ -128,7 +128,10 @@ bool on_data(Client *c, int ec)
             }
             cl->outbuff.append(ptr, 4);
             cl->outbuff.append(msg_pref_client);
-            update_events(ec, cl);
+            if (!update_events(ec, cl))
+            {
+                cl->alive = false;
+            }
         }
         offset += len + 4;
     }
@@ -313,7 +316,10 @@ int main()
                             const char *ptr = reinterpret_cast<const char *>(&sizeh);
                             c->outbuff.append(ptr, 4);
                             c->outbuff.append(hello);
-                            update_events(ec, c);
+                            if (!update_events(ec, c))
+                            {
+                                cj->alive = false;
+                            }
                             continue;
                         }
                         const char *p = reinterpret_cast<const char *>(&size);
@@ -325,7 +331,11 @@ int main()
                         cj->outbuff.append(p, 4);
                         cj->outbuff.append(msg);
 
-                        update_events(ec, cj);
+                        if (!update_events(ec, cj))
+                        {
+                            cj->alive = false;
+                            continue;
+                        }
                     }
                 }
             }
@@ -354,12 +364,12 @@ int main()
                                 break;
                             }
                             c->inbuff.append(buff, static_cast<std::size_t>(n));
-                            if(!on_data(c, ec)){
+                            if (!on_data(c, ec))
+                            {
                                 c->alive = false;
                                 break;
                             }
                             continue;
-
                         }
                         else if (n == 0)
                         {
@@ -406,38 +416,51 @@ int main()
             }
         }
         bool any_dead = true;
-        while(any_dead){
+        while (any_dead)
+        {
             any_dead = false;
-            for(auto it = clients.begin(); it != clients.end();){
-                if(!(*it)->alive){
+            for (auto it = clients.begin(); it != clients.end();)
+            {
+                if (!(*it)->alive)
+                {
                     deadclients.push_back(*it);
                     it = clients.erase(it);
-                } else {
+                }
+                else
+                {
                     it++;
                 }
             }
-            for(Client * dead_client : deadclients){
+            for (Client *dead_client : deadclients)
+            {
                 std::string msg_disconnected_for_all_live = "[Client " + std::to_string(dead_client->fd_client) + "] disconnected\n";
                 uint32_t len_be = htonl(msg_disconnected_for_all_live.size());
-                const char* ptr = reinterpret_cast<const char*>(&len_be);
-                for(Client * live_client : clients){
-                    if(!live_client->alive){
+                const char *ptr = reinterpret_cast<const char *>(&len_be);
+                for (Client *live_client : clients)
+                {
+                    if (!live_client->alive)
+                    {
                         continue;
                     }
-                    if(live_client->outbuff.size() + msg_disconnected_for_all_live.size() + 4 > MAX_INBUF){
+                    if (live_client->outbuff.size() + msg_disconnected_for_all_live.size() + 4 > MAX_INBUF)
+                    {
                         live_client->alive = false;
-                        if(!any_dead){
-                            any_dead = true;
-                        }
+                        any_dead = true;
                         continue;
                     }
                     live_client->outbuff.append(ptr, 4);
                     live_client->outbuff.append(msg_disconnected_for_all_live);
-                    update_events(ec, live_client);
+                    if (!update_events(ec, live_client))
+                    {
+                        any_dead = true;
+                        live_client->alive = false;
+                        continue;
+                    }
                 }
             }
 
-            for(Client * dead_client : deadclients){
+            for (Client *dead_client : deadclients)
+            {
                 std::cout << "[Client " << dead_client->fd_client << "] disconnected\n";
                 close_client(ec, dead_client, nclients);
             }
