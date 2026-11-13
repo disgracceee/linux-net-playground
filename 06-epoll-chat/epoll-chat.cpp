@@ -25,13 +25,12 @@ struct Client
     uint32_t event = 0;
     std::string inbuff{};
     std::string outbuff{};
-    std::string prefbufflength{};
     bool alive = true;
     bool FIN = false;
-    std::size_t received = 0;
 };
 
 std::vector<Client *> clients;
+std::vector<Client *> deadclients;
 
 bool set_noblocking(int fd)
 {
@@ -303,7 +302,7 @@ int main()
                         std::cout << '\n';
                     }
                     clients.push_back(c);
-                    std::string msg = "[Client " + std::to_string(c->fd_client) + "] Conneted\n";
+                    std::string msg = "[Client " + std::to_string(c->fd_client) + "] connected\n";
                     uint32_t size = htonl(msg.size());
                     for (Client *cj : clients)
                     {
@@ -406,36 +405,43 @@ int main()
                 }
             }
         }
-        for (Client *tempcl : clients)
-        {
-            if (!tempcl->alive)
-            {
-                std::string msg_for_all = "[Client " + std::to_string(tempcl->fd_client) + "] disconnected\n";
-                uint32_t len = htonl(msg_for_all.size());
-                const char *ptrr = reinterpret_cast<const char *>(&len);
-                for (Client *tempcl2 : clients)
-                {
-                    if(!tempcl2->alive || tempcl == tempcl2){
-                        continue;
-                    }
-                    if(tempcl2->outbuff.size() + msg_for_all.size() + 4 > MAX_INBUF){
-                        tempcl2->alive = false;
-                        continue;
-                    }
-                    tempcl2->outbuff.append(ptrr, 4);
-                    tempcl2->outbuff.append(msg_for_all);
-                    update_events(ec, tempcl2);
+        bool any_dead = true;
+        while(any_dead){
+            any_dead = false;
+            for(auto it = clients.begin(); it != clients.end();){
+                if(!(*it)->alive){
+                    deadclients.push_back(*it);
+                    it = clients.erase(it);
+                } else {
+                    it++;
                 }
             }
-        }
-        for(auto it = clients.begin(); it != clients.end();){
-            if(!(*it)->alive){
-                std::cout << "[Client " << (*it)->fd_client << "] disconnected.\n"; 
-                close_client(ec, (*it), nclients);
-                it = clients.erase(it);
-            } else {
-                ++it;
+            for(Client * dead_client : deadclients){
+                std::string msg_disconnected_for_all_live = "[Client " + std::to_string(dead_client->fd_client) + "] disconnected\n";
+                uint32_t len_be = htonl(msg_disconnected_for_all_live.size());
+                const char* ptr = reinterpret_cast<const char*>(&len_be);
+                for(Client * live_client : clients){
+                    if(!live_client->alive){
+                        continue;
+                    }
+                    if(live_client->outbuff.size() + msg_disconnected_for_all_live.size() + 4 > MAX_INBUF){
+                        live_client->alive = false;
+                        if(!any_dead){
+                            any_dead = true;
+                        }
+                        continue;
+                    }
+                    live_client->outbuff.append(ptr, 4);
+                    live_client->outbuff.append(msg_disconnected_for_all_live);
+                    update_events(ec, live_client);
+                }
             }
+
+            for(Client * dead_client : deadclients){
+                std::cout << "[Client " << dead_client->fd_client << "] disconnected\n";
+                close_client(ec, dead_client, nclients);
+            }
+            deadclients.clear();
         }
     }
     close(fd_lst);
