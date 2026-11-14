@@ -12,12 +12,15 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 
 constexpr int MAXCLIENTS = 1024;
 constexpr int MAXEVENT = 64;
 constexpr int PORT = 5555;
 constexpr int MAX_PAYLOUT = 1 * 1024 * 1024;
 constexpr int MAX_INBUF = 4 + MAX_PAYLOUT + 64 * 1024;
+
 
 struct Client
 {
@@ -29,6 +32,13 @@ struct Client
     bool FIN = false;
 };
 
+struct Room {
+    std::string name{};
+    Client * creator = nullptr;
+    std::unordered_set<Client *> clients_In{};
+};
+
+std::unordered_map<std::string, Room> rooms;
 std::vector<Client *> clients;
 std::vector<Client *> deadclients;
 
