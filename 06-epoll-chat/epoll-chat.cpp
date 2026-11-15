@@ -98,6 +98,166 @@ bool update_events(int ec, Client *c)
     return true;
 }
 
+bool handle_command(Client *c, std::string &msg, int ec)
+{
+    std::string_view word(msg);
+    std::string_view tok[3];
+    std::size_t i = 0;
+    std::size_t ntoks = 0;
+
+    while (i < word.size() && ntoks < 3)
+    {
+        while (i < word.size() && word[i] == ' ')
+        {
+            i++;
+        }
+        if (i >= word.size())
+        {
+            break;
+        }
+
+        std::size_t start = i;
+
+        while (i < word.size() && word[i] != ' ')
+        {
+            i++;
+        }
+        tok[ntoks++] = word.substr(start, i - start);
+    }
+
+    if (tok[0] == "/join")
+    {
+        if (ntoks < 2)
+        {
+            std::string error = "You must write the name of the room\n";
+            uint32_t size_be = htonl(error.size());
+            const char *p = reinterpret_cast<const char *>(&size_be);
+            if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
+            {
+                c->alive = false;
+                return false;
+            }
+            c->outbuff.append(p, 4);
+            c->outbuff.append(error);
+            if (!update_events(ec, c))
+            {
+                c->alive = false;
+                return false;
+            }
+            return true;
+        }
+        else if (ntoks == 2)
+        {
+            std::string namerom(tok[1]);
+            auto it = rooms.find(namerom);
+            if (it == rooms.end())
+            {
+                std::string error = "Such a room doesn’t exist.\n";
+                uint32_t size_be = htonl(error.size());
+                const char *p = reinterpret_cast<const char *>(&size_be);
+                if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
+                {
+                    c->alive = false;
+                    return false;
+                }
+                c->outbuff.append(p, 4);
+                c->outbuff.append(error);
+                if (!update_events(ec, c))
+                {
+                    c->alive = false;
+                    return false;
+                }
+            }
+            else
+            {
+                if (tok[1] == c->current_room)
+                {
+                    std::string error = "You cannot connect to the room you are currently in.\n";
+                    uint32_t size_be = htonl(error.size());
+                    const char *p = reinterpret_cast<const char *>(&size_be);
+                    if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
+                    {
+                        c->alive = false;
+                        return false;
+                    }
+                    c->outbuff.append(p, 4);
+                    c->outbuff.append(error);
+                    if (!update_events(ec, c))
+                    {
+                        c->alive = false;
+                        return false;
+                    }
+                }
+                else
+                {
+                    std::string beforeroom = c->current_room;
+                    std::string namerom(tok[1]);
+                    auto it = rooms.find(namerom);
+                    if (it != rooms.end())
+                    {
+                        std::string message_for_client = "You have been redirected to the selected room.\n";
+                        uint32_t size_be = htonl(message_for_client.size());
+                        const char *p = reinterpret_cast<const char *>(&size_be);
+                        auto it2 = rooms.find(c->current_room);
+                        if (it2 != rooms.end())
+                        {
+                            auto &room2 = (*it2).second;
+                            room2.clients_In.erase(c);
+                        }
+                        auto &room = (*it).second;
+                        room.clients_In.insert(c);
+                        if (c->outbuff.size() + message_for_client.size() + 4 > MAX_INBUF)
+                        {
+                            c->alive = false;
+                            return false;
+                        }
+                        c->outbuff.append(p, 4);
+                        c->outbuff.append(message_for_client);
+                        c->current_room = namerom;
+                        if (!update_events(ec, c))
+                        {
+                            c->alive = false;
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        std::string message_for_client = "The room was not found.\n";
+                        uint32_t size_be = htonl(message_for_client.size());
+                        const char *ptr = reinterpret_cast<const char *>(&size_be);
+                        if (c->outbuff.size() + message_for_client.size() + 4 > MAX_INBUF)
+                        {
+                            c->alive = false;
+                            return false;
+                        }
+                        c->outbuff.append(ptr, 4);
+                        c->outbuff.append(message_for_client);
+                        if (!update_events(ec, c))
+                        {
+                            c->alive = false;
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else if (tok[0] == "/create")
+    {
+    }
+    else if (tok[0] == "/leave")
+    {
+    }
+    else if (tok[0] == "/users")
+    {
+    }
+    else if (tok[0] == "/rooms")
+    {
+    }
+
+    return true;
+}
+
 bool on_data(Client *c, int ec)
 {
     int offset = 0;
@@ -123,10 +283,17 @@ bool on_data(Client *c, int ec)
         }
         std::string msg(c->inbuff.data() + offset + 4, len);
         std::string msg_pref_client = "[Client " + std::to_string(c->fd_client) + "]: " + msg + '\n';
+        if (!msg.empty() && msg[0] == '/')
+        {
+            handle_command(c, msg, ec);
+            offset += len + 4;
+            continue;
+        }
         uint32_t new_len_le = msg_pref_client.size();
         uint32_t new_len_be = htonl(new_len_le);
         const char *ptr = reinterpret_cast<const char *>(&new_len_be);
         auto &roomclients = rooms[c->current_room].clients_In;
+
         for (auto it = roomclients.begin(); it != roomclients.end(); it++)
         {
             if (*it == c || (*it)->alive == false)
