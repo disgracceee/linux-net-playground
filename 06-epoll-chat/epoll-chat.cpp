@@ -126,22 +126,23 @@ bool on_data(Client *c, int ec)
         uint32_t new_len_le = msg_pref_client.size();
         uint32_t new_len_be = htonl(new_len_le);
         const char *ptr = reinterpret_cast<const char *>(&new_len_be);
-        for (Client *cl : clients)
+        auto &roomclients = rooms[c->current_room].clients_In;
+        for (auto it = roomclients.begin(); it != roomclients.end(); it++)
         {
-            if (cl == c || cl->alive == false)
+            if (*it == c || (*it)->alive == false)
             {
                 continue;
             }
-            if (cl->outbuff.size() + static_cast<std::size_t>(new_len_le) + 4 > MAX_INBUF)
+            if ((*it)->outbuff.size() + static_cast<std::size_t>(new_len_le) + 4 > MAX_INBUF)
             {
-                cl->alive = false;
+                (*it)->alive = false;
                 continue;
             }
-            cl->outbuff.append(ptr, 4);
-            cl->outbuff.append(msg_pref_client);
-            if (!update_events(ec, cl))
+            (*it)->outbuff.append(ptr, 4);
+            (*it)->outbuff.append(msg_pref_client);
+            if (!update_events(ec, (*it)))
             {
-                cl->alive = false;
+                (*it)->alive = false;
             }
         }
         offset += len + 4;
