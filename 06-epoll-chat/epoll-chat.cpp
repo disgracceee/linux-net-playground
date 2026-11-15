@@ -21,7 +21,6 @@ constexpr int PORT = 5555;
 constexpr int MAX_PAYLOUT = 1 * 1024 * 1024;
 constexpr int MAX_INBUF = 4 + MAX_PAYLOUT + 64 * 1024;
 
-
 struct Client
 {
     int fd_client = -1;
@@ -30,14 +29,15 @@ struct Client
     std::string outbuff{};
     bool alive = true;
     bool FIN = false;
+    std::string current_room = "general";
 };
 
-struct Room {
+struct Room
+{
     std::string name{};
-    Client * creator = nullptr;
+    Client *creator = nullptr;
     std::unordered_set<Client *> clients_In{};
 };
-
 std::unordered_map<std::string, Room> rooms;
 std::vector<Client *> clients;
 std::vector<Client *> deadclients;
@@ -63,6 +63,7 @@ void close_client(int ec, Client *c, int &nclients)
     {
         perror("error EPOLL_CTL_DEL");
     }
+    rooms[c->current_room].clients_In.erase(c);
     close(c->fd_client);
     delete c;
     --nclients;
@@ -252,6 +253,10 @@ int main()
         return 1;
     }
 
+    Room general_room;
+    general_room.name = "general";
+    rooms["general"] = std::move(general_room);
+
     while (true)
     {
         int active = epoll_wait(ec, events, MAXEVENT, -1);
@@ -315,11 +320,12 @@ int main()
                         std::cout << '\n';
                     }
                     clients.push_back(c);
+                    rooms["general"].clients_In.insert(c);
                     std::string msg = "[Client " + std::to_string(c->fd_client) + "] connected\n";
                     uint32_t size = htonl(msg.size());
-                    for (Client *cj : clients)
+                    for (auto it = rooms["general"].clients_In.begin(); it != rooms["general"].clients_In.end(); it++)
                     {
-                        if (cj == c)
+                        if ((*it) == c)
                         {
                             std::string hello = "Welcome, you’ve connected.\n";
                             uint32_t sizeh = htonl(hello.size());
@@ -328,22 +334,23 @@ int main()
                             c->outbuff.append(hello);
                             if (!update_events(ec, c))
                             {
-                                cj->alive = false;
+                                (*it)->alive = false;
+                                break;
                             }
                             continue;
                         }
                         const char *p = reinterpret_cast<const char *>(&size);
-                        if (cj->outbuff.size() + msg.size() + 4 > MAX_INBUF)
+                        if ((*it)->outbuff.size() + msg.size() + 4 > MAX_INBUF)
                         {
-                            cj->alive = false;
+                            (*it)->alive = false;
                             continue;
                         }
-                        cj->outbuff.append(p, 4);
-                        cj->outbuff.append(msg);
+                        (*it)->outbuff.append(p, 4);
+                        (*it)->outbuff.append(msg);
 
-                        if (!update_events(ec, cj))
+                        if (!update_events(ec, (*it)))
                         {
-                            cj->alive = false;
+                            (*it)->alive = false;
                             continue;
                         }
                     }
