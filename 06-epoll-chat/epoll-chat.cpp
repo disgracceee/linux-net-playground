@@ -198,17 +198,100 @@ void handle_command(Client *c, std::string &msg, int ec)
     }
     else if (tok[0] == "/create")
     {
+        if (ntoks < 2)
+        {
+            send_to_client(ec, c, "You need to input name room\n");
+            return;
+        }
+
+        std::string newnameroom(tok[1]);
+        auto it = rooms.find(newnameroom);
+        if (it != rooms.end())
+        {
+            send_to_client(ec, c, "Room already exists. Use /join to enter it.\n");
+            return;
+        }
+
+        Room newroom{};
+        newroom.name = newnameroom;
+        newroom.creator = c;
+        rooms[newroom.name] = std::move(newroom);
+        auto it2 = rooms.find(c->current_room);
+        if (it2 != rooms.end())
+        {
+            (*it2).second.clients_In.erase(c);
+        }
+        rooms[newnameroom].clients_In.insert(c);
+        c->current_room = newnameroom;
+        send_to_client(ec, c, "You have successfully created a room and been redirected to it.\n");
     }
     else if (tok[0] == "/leave")
     {
+        if (ntoks == 1)
+        {
+            if (c->current_room == "general")
+            {
+                send_to_client(ec, c, "You are in a global room, and it is impossible to leave it.\n");
+                return;
+            }
+            auto it = rooms.find(c->current_room);
+            if (it != rooms.end())
+            {
+                (*it).second.clients_In.erase(c);
+            }
+            rooms["general"].clients_In.insert(c);
+            c->current_room = "general";
+            send_to_client(ec, c, "You have left the current room and been successfully redirected to the global room.\n");
+            return;
+        }
+        else
+        {
+            send_to_client(ec, c, "You have entered extra characters; use /leave.\n");
+            return;
+        }
     }
     else if (tok[0] == "/users")
     {
+        if (ntoks == 1)
+        {
+            auto it = rooms.find(c->current_room);
+            if (it == rooms.end())
+            {
+                send_to_client(ec, c, "Error: current room not found.\n");
+                return;
+            }
+            size_t sizeroom = (*it).second.clients_In.size();
+            std::string users = "Client in room: \n";
+            for (Client *cl : (*it).second.clients_In)
+            {
+                users += "Client " + std::to_string(cl->fd_client) + "\n";
+            }
+            users += "Total: " + std::to_string(sizeroom);
+            send_to_client(ec, c, users);
+        }
+        else
+        {
+            send_to_client(ec, c, "You have entered extra characters; use /users.\n");
+            return;
+        }
     }
     else if (tok[0] == "/rooms")
     {
+        if (ntoks == 1)
+        {
+            std::string countrooms = "Rooms: \n";
+            for (auto it = rooms.begin(); it != rooms.end(); it++)
+            {
+                countrooms += (*it).second.name + '\n';
+            }
+            countrooms += "Total rooms: " + std::to_string(rooms.size()) + '\n';
+            send_to_client(ec, c, countrooms);
+            return;
+        } else {
+            send_to_client(ec, c, "You have entered extra characters; use /rooms.\n");
+            return;
+        }
     }
-
 }
 
 bool on_data(Client *c, int ec)
