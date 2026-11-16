@@ -57,6 +57,7 @@ bool set_noblocking(int fd)
     }
     return true;
 }
+
 void close_client(int ec, Client *c, int &nclients)
 {
     if (epoll_ctl(ec, EPOLL_CTL_DEL, c->fd_client, nullptr))
@@ -98,7 +99,27 @@ bool update_events(int ec, Client *c)
     return true;
 }
 
-bool handle_command(Client *c, std::string &msg, int ec)
+void send_to_client(int ec, Client *c, const std::string &data)
+{
+
+    uint32_t size_be = htonl(data.size());
+    const char *ptr = reinterpret_cast<const char *>(&size_be);
+    if (c->outbuff.size() + data.size() + 4 > MAX_INBUF)
+    {
+        c->alive = false;
+        return;
+    }
+    c->outbuff.append(ptr, 4);
+    c->outbuff.append(data);
+    if (!update_events(ec, c))
+    {
+        c->alive = false;
+        return;
+    }
+    return;
+}
+
+void handle_command(Client *c, std::string &msg, int ec)
 {
     std::string_view word(msg);
     std::string_view tok[3];
@@ -129,22 +150,8 @@ bool handle_command(Client *c, std::string &msg, int ec)
     {
         if (ntoks < 2)
         {
-            std::string error = "You must write the name of the room\n";
-            uint32_t size_be = htonl(error.size());
-            const char *p = reinterpret_cast<const char *>(&size_be);
-            if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
-            {
-                c->alive = false;
-                return false;
-            }
-            c->outbuff.append(p, 4);
-            c->outbuff.append(error);
-            if (!update_events(ec, c))
-            {
-                c->alive = false;
-                return false;
-            }
-            return true;
+            send_to_client(ec, c, "You must write the name of the room\n");
+            return;
         }
         else if (ntoks == 2)
         {
@@ -152,92 +159,39 @@ bool handle_command(Client *c, std::string &msg, int ec)
             auto it = rooms.find(namerom);
             if (it == rooms.end())
             {
-                std::string error = "Such a room doesn’t exist.\n";
-                uint32_t size_be = htonl(error.size());
-                const char *p = reinterpret_cast<const char *>(&size_be);
-                if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
-                {
-                    c->alive = false;
-                    return false;
-                }
-                c->outbuff.append(p, 4);
-                c->outbuff.append(error);
-                if (!update_events(ec, c))
-                {
-                    c->alive = false;
-                    return false;
-                }
+                send_to_client(ec, c, "Such a room doesn’t exist.\n");
+                return;
             }
             else
             {
                 if (tok[1] == c->current_room)
                 {
-                    std::string error = "You cannot connect to the room you are currently in.\n";
-                    uint32_t size_be = htonl(error.size());
-                    const char *p = reinterpret_cast<const char *>(&size_be);
-                    if (c->outbuff.size() + error.size() + 4 > MAX_INBUF)
-                    {
-                        c->alive = false;
-                        return false;
-                    }
-                    c->outbuff.append(p, 4);
-                    c->outbuff.append(error);
-                    if (!update_events(ec, c))
-                    {
-                        c->alive = false;
-                        return false;
-                    }
+                    send_to_client(ec, c, "You cannot connect to the room you are currently in.\n");
+                    return;
                 }
                 else
                 {
                     std::string beforeroom = c->current_room;
                     std::string namerom(tok[1]);
-                    auto it = rooms.find(namerom);
-                    if (it != rooms.end())
+                    auto it_to = rooms.find(namerom);
+                    auto it_from = rooms.find(beforeroom);
+                    if (it_to == rooms.end())
                     {
-                        std::string message_for_client = "You have been redirected to the selected room.\n";
-                        uint32_t size_be = htonl(message_for_client.size());
-                        const char *p = reinterpret_cast<const char *>(&size_be);
-                        auto it2 = rooms.find(c->current_room);
-                        if (it2 != rooms.end())
-                        {
-                            auto &room2 = (*it2).second;
-                            room2.clients_In.erase(c);
-                        }
-                        auto &room = (*it).second;
-                        room.clients_In.insert(c);
-                        if (c->outbuff.size() + message_for_client.size() + 4 > MAX_INBUF)
-                        {
-                            c->alive = false;
-                            return false;
-                        }
-                        c->outbuff.append(p, 4);
-                        c->outbuff.append(message_for_client);
+                        send_to_client(ec, c, "Room not found\n");
+                        return;
+                    }
+                    if (it_from == rooms.end())
+                    {
                         c->current_room = namerom;
-                        if (!update_events(ec, c))
-                        {
-                            c->alive = false;
-                            return false;
-                        }
+                        (*it_to).second.clients_In.insert(c);
+                        send_to_client(ec, c, "You have successfully changed rooms.\n");
+                        return;
                     }
-                    else
-                    {
-                        std::string message_for_client = "The room was not found.\n";
-                        uint32_t size_be = htonl(message_for_client.size());
-                        const char *ptr = reinterpret_cast<const char *>(&size_be);
-                        if (c->outbuff.size() + message_for_client.size() + 4 > MAX_INBUF)
-                        {
-                            c->alive = false;
-                            return false;
-                        }
-                        c->outbuff.append(ptr, 4);
-                        c->outbuff.append(message_for_client);
-                        if (!update_events(ec, c))
-                        {
-                            c->alive = false;
-                            return false;
-                        }
-                    }
+                    (*it_from).second.clients_In.erase(c);
+                    (*it_to).second.clients_In.insert(c);
+                    c->current_room = namerom;
+                    send_to_client(ec, c, "You have successfully changed rooms.\n");
+                    return;
                 }
             }
         }
@@ -255,7 +209,6 @@ bool handle_command(Client *c, std::string &msg, int ec)
     {
     }
 
-    return true;
 }
 
 bool on_data(Client *c, int ec)
