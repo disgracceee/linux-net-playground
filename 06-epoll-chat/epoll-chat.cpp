@@ -30,6 +30,8 @@ struct Client
     bool alive = true;
     bool FIN = false;
     std::string current_room = "general";
+    std::string username{};
+    bool nameenter = false;
 };
 
 struct Room
@@ -320,7 +322,7 @@ bool on_data(Client *c, int ec)
             break;
         }
         std::string msg(c->inbuff.data() + offset + 4, len);
-        std::string msg_pref_client = "[Client " + std::to_string(c->fd_client) + "]: " + msg + '\n';
+        std::string msg_pref_client = "[" + c->username + "]: " + msg + '\n';
         if (!msg.empty() && msg[0] == '/')
         {
             handle_command(c, msg, ec);
@@ -393,6 +395,71 @@ void flush_out(Client *to)
     }
 }
 
+bool set_name(Client *c, int ec)
+{
+    char buff[1024];
+    while (!c->nameenter)
+    {
+        ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
+        if (n > 0)
+        {
+            c->inbuff.append(buff, n);
+
+            if (c->inbuff.size() < 4)
+            {
+                continue;
+            }
+
+            uint32_t len_be = 0;
+            memcpy(&len_be, c->inbuff.data(), 4);
+            uint32_t len_le = ntohl(len_be);
+
+            if (len_le > 20 || len_le == 0)
+            {
+                send_to_client(ec, c, "The name must not exceed 20 characters.\n");
+                c->inbuff.clear();
+                return false;
+            }
+
+            if (c->inbuff.size() < 4 + len_le)
+            {
+                continue;
+            }
+
+            std::string nameus(c->inbuff.data() + 4, len_le);
+            c->username = nameus;
+            c->nameenter = true;
+            c->inbuff.erase(0, len_le + 4);
+
+            return true;
+        }
+        else if (n == 0)
+        {
+            c->alive = false;
+            return false;
+        }
+        else if (n < 0)
+        {
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
+            {
+                break;
+            }
+            else if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
+            {
+                c->alive = false;
+                return false;
+            }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            perror("fatal error read");
+            c->alive = false;
+            break;
+        }
+    }
+    return false;
+}
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
@@ -533,7 +600,7 @@ int main()
                     {
                         if ((*it) == c)
                         {
-                            std::string hello = "Welcome, you’ve connected.\n";
+                            std::string hello = "Welcome, you’ve connected.\n Enter your name: \n";
                             uint32_t sizeh = htonl(hello.size());
                             const char *ptr = reinterpret_cast<const char *>(&sizeh);
                             c->outbuff.append(ptr, 4);
@@ -576,47 +643,65 @@ int main()
                 }
                 if (events[i].events & (EPOLLIN | EPOLLHUP))
                 {
-                    while (true)
+                    if (!c->nameenter)
                     {
-                        ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
-                        if (n > 0)
+                        if (!set_name(c, ec))
                         {
-                            if (c->inbuff.size() + n > MAX_INBUF)
-                            {
-                                c->alive = false;
-                                break;
-                            }
-                            c->inbuff.append(buff, static_cast<std::size_t>(n));
-                            if (!on_data(c, ec))
-                            {
-                                c->alive = false;
-                                break;
-                            }
                             continue;
                         }
-                        else if (n == 0)
+                        send_to_client(ec, c, "You have successfully entered your name. Now your name in the chat is: |" + c->username + "|\n");
+                        if (!c->inbuff.empty())
                         {
-                            c->FIN = true;
-                            break;
+                            if(!on_data(c,ec)){
+                                c->alive = false;
+                                continue;
+                            }
                         }
-                        else if (n < 0)
+                    }
+                    if (c->nameenter)
+                    {
+                        while (true)
                         {
-                            if (errno == EWOULDBLOCK || errno == EAGAIN)
+                            ssize_t n = recv(c->fd_client, buff, sizeof(buff), 0);
+                            if (n > 0)
                             {
+                                if (c->inbuff.size() + n > MAX_INBUF)
+                                {
+                                    c->alive = false;
+                                    break;
+                                }
+                                c->inbuff.append(buff, static_cast<std::size_t>(n));
+                                if (!on_data(c, ec))
+                                {
+                                    c->alive = false;
+                                    break;
+                                }
+                                continue;
+                            }
+                            else if (n == 0)
+                            {
+                                c->FIN = true;
                                 break;
                             }
-                            else if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
+                            else if (n < 0)
                             {
+                                if (errno == EWOULDBLOCK || errno == EAGAIN)
+                                {
+                                    break;
+                                }
+                                else if (errno == ECONNABORTED || errno == ECONNRESET || errno == EPIPE)
+                                {
+                                    c->alive = false;
+                                    break;
+                                }
+                                else if (errno == EINTR)
+                                {
+                                    continue;
+                                }
+                                perror("fatal error read");
                                 c->alive = false;
                                 break;
                             }
-                            else if (errno == EINTR)
-                            {
-                                continue;
-                            }
-                            perror("fatal error read");
-                            c->alive = false;
-                            break;
                         }
                     }
                 }
@@ -656,7 +741,7 @@ int main()
             }
             for (Client *dead_client : deadclients)
             {
-                std::string msg_disconnected_for_all_live = "[Client " + std::to_string(dead_client->fd_client) + "] disconnected\n";
+                std::string msg_disconnected_for_all_live = "[" + dead_client->username + "] disconnected\n";
                 uint32_t len_be = htonl(msg_disconnected_for_all_live.size());
                 const char *ptr = reinterpret_cast<const char *>(&len_be);
                 auto it = rooms.find(dead_client->current_room);
