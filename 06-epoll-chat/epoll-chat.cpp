@@ -287,7 +287,9 @@ void handle_command(Client *c, std::string &msg, int ec)
             countrooms += "Total rooms: " + std::to_string(rooms.size()) + '\n';
             send_to_client(ec, c, countrooms);
             return;
-        } else {
+        }
+        else
+        {
             send_to_client(ec, c, "You have entered extra characters; use /rooms.\n");
             return;
         }
@@ -657,25 +659,29 @@ int main()
                 std::string msg_disconnected_for_all_live = "[Client " + std::to_string(dead_client->fd_client) + "] disconnected\n";
                 uint32_t len_be = htonl(msg_disconnected_for_all_live.size());
                 const char *ptr = reinterpret_cast<const char *>(&len_be);
-                for (Client *live_client : clients)
+                auto it = rooms.find(dead_client->current_room);
+                if (it != rooms.end())
                 {
-                    if (!live_client->alive)
+                    for (Client *live_client : (*it).second.clients_In)
                     {
-                        continue;
-                    }
-                    if (live_client->outbuff.size() + msg_disconnected_for_all_live.size() + 4 > MAX_INBUF)
-                    {
-                        live_client->alive = false;
-                        any_dead = true;
-                        continue;
-                    }
-                    live_client->outbuff.append(ptr, 4);
-                    live_client->outbuff.append(msg_disconnected_for_all_live);
-                    if (!update_events(ec, live_client))
-                    {
-                        any_dead = true;
-                        live_client->alive = false;
-                        continue;
+                        if (!live_client->alive)
+                        {
+                            continue;
+                        }
+                        if (live_client->outbuff.size() + msg_disconnected_for_all_live.size() + 4 > MAX_INBUF)
+                        {
+                            live_client->alive = false;
+                            any_dead = true;
+                            continue;
+                        }
+                        live_client->outbuff.append(ptr, 4);
+                        live_client->outbuff.append(msg_disconnected_for_all_live);
+                        if (!update_events(ec, live_client))
+                        {
+                            any_dead = true;
+                            live_client->alive = false;
+                            continue;
+                        }
                     }
                 }
             }
